@@ -1,12 +1,12 @@
-import time
-import click
-import pathlib
 import json
+import pathlib
+import time
+
+import click
 import sqlite_utils
-from tqdm import tqdm
-from todoist_to_sqlite import utils
-from pytodoist import todoist
 from pytodoist.api import TodoistAPI
+from todoist_to_sqlite import utils
+from tqdm import tqdm
 
 
 @click.group()
@@ -27,13 +27,13 @@ def auth(auth):
     "Save authentication credentials to a JSON file"
     auth_data = {}
     if pathlib.Path(auth).exists():
-        auth_data = json.load(open(auth))
+        auth_data = json.loads(pathlib.Path(auth).read_text())
     click.echo(
         "In Todoist, navigate to Settings > Integrations > API Token and paste it here:"
     )
     personal_token = click.prompt("API Token")
     auth_data["todoist_api_token"] = personal_token
-    open(auth, "w").write(json.dumps(auth_data, indent=4) + "\n")
+    pathlib.Path(auth, "w").write_text(json.dumps(auth_data, indent=4) + "\n")
     click.echo()
     click.echo(
         "Your authentication credentials have been saved to {}. You can now import tasks by running:".format(
@@ -65,7 +65,7 @@ def sync(db_path, auth):
     """Sync todoist data for the authenticated user"""
     db = sqlite_utils.Database(db_path)
     try:
-        data = json.load(open(auth))
+        data = json.loads(pathlib.Path(auth).read_text())
         token = data["todoist_api_token"]
     except (KeyError, FileNotFoundError):
         utils.error(
@@ -78,15 +78,21 @@ def sync(db_path, auth):
             sync_data[category],
             pk="id",
             alter=True,
-            foreign_keys=utils.foreign_keys_for(category),
         )
 
     db["users"].upsert_all(
         sync_data["collaborators"],
         pk="id",
-        foreign_keys=utils.foreign_keys_for("users"),
+        alter=True,
     )
-    db["users"].upsert(sync_data["user"], pk="id")
+    db["users"].upsert(sync_data["user"], pk="id", alter=True)
+    for category in ["items", "labels", "projects", "filters", "notes", "sections"]:
+        for fk in utils.foreign_keys_for(category):
+            if db[category].exists():
+                db[category].add_foreign_key(
+                    column=fk[0], other_table=fk[1], other_column=fk[2], ignore=True
+                )
+    db.index_foreign_keys()
 
 
 @cli.command()
@@ -116,7 +122,7 @@ def completed_tasks(db_path, auth, from_date, to_date):
     """Save all completed tasks for the authenticated user (requires Todoist premium)"""
     db = sqlite_utils.Database(db_path)
     try:
-        data = json.load(open(auth))
+        data = json.loads(pathlib.Path(auth).read_text())
         token = data["todoist_api_token"]
     except (KeyError, FileNotFoundError):
         utils.error(
@@ -147,13 +153,11 @@ def completed_tasks(db_path, auth, from_date, to_date):
             data["items"],
             pk="id",
             alter=True,
-            foreign_keys=utils.foreign_keys_for("items"),
         )
         db["projects"].upsert_all(
             data["projects"].values(),
             pk="id",
             alter=True,
-            foreign_keys=utils.foreign_keys_for("projects"),
         )
 
         num_items = len(data["items"])
@@ -165,6 +169,14 @@ def completed_tasks(db_path, auth, from_date, to_date):
         time.sleep(1)
 
     progress_bar.close()
+
+    for category in ["items", "labels", "projects", "filters", "notes", "sections"]:
+        for fk in utils.foreign_keys_for(category):
+            if db[category].exists():
+                db[category].add_foreign_key(
+                    column=fk[0], other_table=fk[1], other_column=fk[2], ignore=True
+                )
+    db.index_foreign_keys()
 
 
 if __name__ == "__main__":
